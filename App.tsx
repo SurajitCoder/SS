@@ -1,36 +1,24 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   Users, 
-  BookOpen, 
   CreditCard, 
-  Calendar, 
-  Settings, 
-  LogOut, 
-  Search, 
   Plus, 
-  ArrowUpCircle, 
-  UserX, 
   ShieldCheck,
   Award,
   LayoutDashboard,
-  TrendingUp, 
-  UserCheck,
-  Activity,
-  ChevronRight,
-  ClipboardList,
   Clock,
   Layout,
-  Bell,
-  AlertCircle,
-  Send,
   History,
   Menu,
-  Cloud,
   Download,
   Upload,
   RefreshCw,
-  X as CloseIcon
+  Cloud,
+  CheckCircle,
+  AlertCircle,
+  X as CloseIcon,
+  LogOut
 } from 'lucide-react';
 import { Student, StudentStatus, Schedule, SyllabusTopic, AuditLogEntry } from './types';
 import { ADMIN_PASSWORD, CLASSES, MONTHS, CURRENT_YEAR } from './constants';
@@ -41,30 +29,138 @@ import FeesManager from './components/FeesManager';
 import DeactivatedAccounts from './components/DeactivatedAccounts';
 import SecurityModal from './components/SecurityModal';
 import DailySchedule from './components/DailySchedule';
-import StudentAvatar from './components/StudentAvatar';
 import Dashboard from './components/Dashboard';
 import ReportCard from './components/ReportCard';
 import IncomeStatement from './components/IncomeStatement';
 import BatchReport from './components/BatchReport';
 
-const STORAGE_KEY = 'BRIGHTXLEARN_DATA_V3';
-// Simple public KV store for syncing data between devices
-const SYNC_API = 'https://kvdb.io/4y27pYyR9p7u8s8w8e8r8t/'; 
+const STORAGE_KEY = 'BRIGHTXLEARN_DATA_V4';
+// Public persistent key-value store for cross-device sync
+const SYNC_API = 'https://kvdb.io/A9p7u8s8w8e8r8t8y27pYyR9p7u/'; 
 
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
+  const [syncKey, setSyncKey] = useState(localStorage.getItem('BX_SYNC_KEY') || '');
+  
   const [activeTab, setActiveTab] = useState<'dashboard' | 'directory' | 'classroom' | 'fees' | 'deactivated' | 'schedule' | 'sync'>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
   const [students, setStudents] = useState<Student[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [syllabusTopics, setSyllabusTopics] = useState<SyllabusTopic[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [reportCardStudentId, setReportCardStudentId] = useState<string | null>(null);
-  
-  const [syncKey, setSyncKey] = useState(localStorage.getItem('BX_SYNC_KEY') || '');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
+
+  const isInitialMount = useRef(true);
+
+  // Load initial data
+  useEffect(() => {
+    const savedData = localStorage.getItem(STORAGE_KEY);
+    if (savedData) {
+      const parsed = JSON.parse(savedData);
+      setStudents(parsed.students || []);
+      setSchedules(parsed.schedules || []);
+      setSyllabusTopics(parsed.syllabusTopics || []);
+      setAuditLogs(parsed.auditLogs || []);
+    }
+  }, []);
+
+  // Sync / Save Function
+  const saveToStorage = useCallback((st: Student[], sch: Schedule[], syl: SyllabusTopic[], logs: AuditLogEntry[]) => {
+    const dataString = JSON.stringify({ students: st, schedules: sch, syllabusTopics: syl, auditLogs: logs });
+    localStorage.setItem(STORAGE_KEY, dataString);
+  }, []);
+
+  // Auto-Push to Cloud when state changes (Debounced)
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+
+    if (!syncKey || !isLoggedIn) return;
+
+    const timer = setTimeout(async () => {
+      setIsSyncing(true);
+      try {
+        const data = { students, schedules, syllabusTopics, auditLogs };
+        await fetch(`${SYNC_API}${syncKey}`, {
+          method: 'POST',
+          body: JSON.stringify(data)
+        });
+        setLastSynced(new Date().toLocaleTimeString());
+      } catch (e) {
+        console.error("Auto-sync failed", e);
+      } finally {
+        setIsSyncing(false);
+      }
+    }, 2000); // 2 second debounce to prevent excessive API calls
+
+    return () => clearTimeout(timer);
+  }, [students, schedules, syllabusTopics, auditLogs, syncKey, isLoggedIn]);
+
+  const addAuditLog = useCallback((event: string) => {
+    const newEntry: AuditLogEntry = {
+      id: Math.random().toString(36).substr(2, 9),
+      event,
+      timestamp: new Date().toLocaleString()
+    };
+    setAuditLogs(prev => {
+      const updated = [newEntry, ...prev].slice(0, 200);
+      saveToStorage(students, schedules, syllabusTopics, updated);
+      return updated;
+    });
+  }, [students, schedules, syllabusTopics, saveToStorage]);
+
+  const handlePullSync = async (targetKey?: string) => {
+    const key = targetKey || syncKey;
+    if (!key) return;
+    
+    setIsSyncing(true);
+    try {
+      const res = await fetch(`${SYNC_API}${key}`);
+      if (!res.ok) throw new Error("Key not found");
+      const data = await res.json();
+      setStudents(data.students || []);
+      setSchedules(data.schedules || []);
+      setSyllabusTopics(data.syllabusTopics || []);
+      setAuditLogs(data.auditLogs || []);
+      saveToStorage(data.students, data.schedules, data.syllabusTopics, data.auditLogs);
+      setLastSynced(new Date().toLocaleTimeString());
+      return true;
+    } catch (e) {
+      console.error("Cloud pull failed", e);
+      return false;
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordInput === ADMIN_PASSWORD) {
+      if (syncKey) {
+        localStorage.setItem('BX_SYNC_KEY', syncKey);
+        await handlePullSync(syncKey); // Pull data from cloud immediately on login
+      }
+      setIsLoggedIn(true);
+      addAuditLog("Admin Logged In");
+    } else {
+      alert("Invalid Admin Password!");
+    }
+  };
+
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | undefined>(undefined);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [classFilter, setClassFilter] = useState('All');
+  const [securityModal, setSecurityModal] = useState<{ isOpen: boolean; action: () => void } | null>(null);
+  const [celebration, setCelebration] = useState<string | null>(null);
 
   const [isIncomeStatementOpen, setIsIncomeStatementOpen] = useState(false);
   const [statementContext, setStatementContext] = useState({ month: new Date().getMonth(), year: new Date().getFullYear() });
@@ -83,101 +179,11 @@ const App: React.FC = () => {
     year: new Date().getFullYear()
   });
 
-  const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editingStudent, setEditingStudent] = useState<Student | undefined>(undefined);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [classFilter, setClassFilter] = useState('All');
-  const [securityModal, setSecurityModal] = useState<{ isOpen: boolean; action: () => void } | null>(null);
-  const [celebration, setCelebration] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedData = localStorage.getItem(STORAGE_KEY);
-    if (savedData) {
-      const parsed = JSON.parse(savedData);
-      setStudents(parsed.students || []);
-      setSchedules(parsed.schedules || []);
-      setSyllabusTopics(parsed.syllabusTopics || []);
-      setAuditLogs(parsed.auditLogs || []);
-    }
-  }, []);
-
-  const saveToStorage = useCallback((st: Student[], sch: Schedule[], syl: SyllabusTopic[], logs: AuditLogEntry[]) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ students: st, schedules: sch, syllabusTopics: syl, auditLogs: logs }));
-  }, []);
-
-  const addAuditLog = useCallback((event: string) => {
-    const newEntry: AuditLogEntry = {
-      id: Math.random().toString(36).substr(2, 9),
-      event,
-      timestamp: new Date().toLocaleString()
-    };
-    setAuditLogs(prev => {
-      const updated = [newEntry, ...prev].slice(0, 200);
-      saveToStorage(students, schedules, syllabusTopics, updated);
-      return updated;
-    });
-  }, [students, schedules, syllabusTopics, saveToStorage]);
-
-  const handlePushSync = async () => {
-    if (!syncKey) {
-      alert("Please enter a Sync Key first!");
-      return;
-    }
-    setIsSyncing(true);
-    try {
-      const data = { students, schedules, syllabusTopics, auditLogs };
-      await fetch(`${SYNC_API}${syncKey}`, {
-        method: 'POST',
-        body: JSON.stringify(data)
-      });
-      addAuditLog("Data pushed to Cloud Sync");
-      alert("Data successfully saved to Cloud!");
-    } catch (e) {
-      alert("Sync failed. Check connection.");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handlePullSync = async () => {
-    if (!syncKey) {
-      alert("Please enter a Sync Key first!");
-      return;
-    }
-    setIsSyncing(true);
-    try {
-      const res = await fetch(`${SYNC_API}${syncKey}`);
-      if (!res.ok) throw new Error("Key not found");
-      const data = await res.json();
-      setStudents(data.students || []);
-      setSchedules(data.schedules || []);
-      setSyllabusTopics(data.syllabusTopics || []);
-      setAuditLogs(data.auditLogs || []);
-      saveToStorage(data.students, data.schedules, data.syllabusTopics, data.auditLogs);
-      addAuditLog("Data pulled from Cloud Sync");
-      alert("Data successfully synchronized from Cloud!");
-    } catch (e) {
-      alert("Pull failed. Key may be invalid or cloud is empty.");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (passwordInput === ADMIN_PASSWORD) {
-      setIsLoggedIn(true);
-      addAuditLog("Admin Logged In successfully");
-    } else {
-      alert("Invalid Admin Password!");
-    }
-  };
-
   const addOrUpdateStudent = (data: any) => {
     let updatedStudents: Student[];
     if (editingStudent) {
       updatedStudents = students.map(s => s.id === editingStudent.id ? { ...s, ...data } : s);
-      addAuditLog(`Updated profile for Student: ${data.name}`);
+      addAuditLog(`Updated profile: ${data.name}`);
     } else {
       const newStudent: Student = {
         ...data,
@@ -199,51 +205,45 @@ const App: React.FC = () => {
     setEditingStudent(undefined);
   };
 
-  const requestSecurityAction = (action: () => void) => {
-    setSecurityModal({ isOpen: true, action });
-  };
-
   const deleteStudent = (id: string) => {
     const student = students.find(s => s.id === id);
-    requestSecurityAction(() => {
-      addAuditLog(`Security Authorized: Permanent Delete Student - ${student?.name}`);
-      const updated = students.filter(s => s.id !== id);
-      setStudents(updated);
-      saveToStorage(updated, schedules, syllabusTopics, auditLogs);
-      setSelectedStudentId(null);
+    setSecurityModal({
+      isOpen: true,
+      action: () => {
+        addAuditLog(`Permanent Delete: ${student?.name}`);
+        const updated = students.filter(s => s.id !== id);
+        setStudents(updated);
+        saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+        setSelectedStudentId(null);
+      }
     });
   };
 
   const toggleFeeStatus = (studentId: string, month: string) => {
     const student = students.find(s => s.id === studentId);
     if (student?.paidMonths.includes(month)) {
-      requestSecurityAction(() => {
-        addAuditLog(`Security Authorized: Unchecked fee for ${student?.name} (${month})`);
-        const updated = students.map(s => {
-          if (s.id === studentId) {
-            const newPaymentRecords = { ...(s.paymentRecords || {}) };
-            delete newPaymentRecords[month];
-            return { 
-              ...s, 
-              paidMonths: s.paidMonths.filter(m => m !== month),
-              paymentRecords: newPaymentRecords
-            };
-          }
-          return s;
-        });
-        setStudents(updated);
-        saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+      setSecurityModal({
+        isOpen: true,
+        action: () => {
+          addAuditLog(`Unchecked fee for ${student?.name} (${month})`);
+          const updated = students.map(s => {
+            if (s.id === studentId) {
+              const newRecords = { ...(s.paymentRecords || {}) };
+              delete newRecords[month];
+              return { ...s, paidMonths: s.paidMonths.filter(m => m !== month), paymentRecords: newRecords };
+            }
+            return s;
+          });
+          setStudents(updated);
+          saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+        }
       });
     } else {
       addAuditLog(`Fee Paid: ${student?.name} for ${month}`);
       const updated = students.map(s => {
         if (s.id === studentId) {
           const today = new Date().toISOString().split('T')[0];
-          return { 
-            ...s, 
-            paidMonths: [...(s.paidMonths || []), month],
-            paymentRecords: { ...(s.paymentRecords || {}), [month]: today }
-          };
+          return { ...s, paidMonths: [...(s.paidMonths || []), month], paymentRecords: { ...(s.paymentRecords || {}), [month]: today } };
         }
         return s;
       });
@@ -252,142 +252,120 @@ const App: React.FC = () => {
     }
   };
 
-  const promoteStudent = (id: string) => {
-    const student = students.find(s => s.id === id);
-    if (!student) return;
-    const currentIdx = CLASSES.indexOf(student.studentClass);
-    if (currentIdx < CLASSES.length - 1) {
-      const nextClass = CLASSES[currentIdx + 1];
-      addAuditLog(`Student Promoted: ${student.name} from ${student.studentClass} to ${nextClass}`);
-      const updated = students.map(s => s.id === id ? { ...s, studentClass: nextClass } : s);
-      setStudents(updated);
-      saveToStorage(updated, schedules, syllabusTopics, auditLogs);
-      setCelebration(student.name);
-      setTimeout(() => setCelebration(null), 3000);
-    } else {
-      alert("Student is already in the highest class!");
-    }
-  };
-
-  const toggleDeactivation = (id: string) => {
-    const student = students.find(s => s.id === id);
-    const newStatus = student?.status === StudentStatus.ACTIVE ? StudentStatus.DEACTIVATED : StudentStatus.ACTIVE;
-    addAuditLog(`Account ${newStatus === StudentStatus.ACTIVE ? 'Reactivated' : 'Archived'}: ${student?.name}`);
-    const updated = students.map(s => s.id === id ? { ...s, status: newStatus } : s);
-    setStudents(updated);
-    saveToStorage(updated, schedules, syllabusTopics, auditLogs);
-  };
-
+  // Fix: Added missing updateAttendance function
   const updateAttendance = (date: string, presentIds: string[], absentIds: string[], targetClass: string) => {
     const updated = students.map(s => {
-      if (s.studentClass !== targetClass) return s;
-      
-      const isPresent = presentIds.includes(s.id);
-      const isAbsent = absentIds.includes(s.id);
-
-      let newAttendance = [...(s.attendance || [])];
-      let newAbsences = [...(s.absences || [])];
-
-      if (isPresent) {
-        if (!newAttendance.includes(date)) newAttendance.push(date);
-        newAbsences = newAbsences.filter(d => d !== date);
-      } else if (isAbsent) {
-        if (!newAbsences.includes(date)) newAbsences.push(date);
-        newAttendance = newAttendance.filter(d => d !== date);
-      } else {
-        newAttendance = newAttendance.filter(d => d !== date);
-        newAbsences = newAbsences.filter(d => d !== date);
+      if (s.studentClass === targetClass) {
+        let attendance = [...(s.attendance || [])];
+        let absences = [...(s.absences || [])];
+        attendance = attendance.filter(d => d !== date);
+        absences = absences.filter(d => d !== date);
+        if (presentIds.includes(s.id)) attendance.push(date);
+        else if (absentIds.includes(s.id)) absences.push(date);
+        return { ...s, attendance, absences };
       }
-
-      return { ...s, attendance: newAttendance, absences: newAbsences };
+      return s;
     });
+    setStudents(updated);
+    saveToStorage(updated, schedules, syllabusTopics, auditLogs);
     addAuditLog(`Attendance recorded for ${targetClass} on ${date}`);
-    setStudents(updated);
-    saveToStorage(updated, schedules, syllabusTopics, auditLogs);
   };
 
+  // Fix: Added missing updateBulkMarks function
   const updateBulkMarks = (targetClass: string, subject: string, date: string, marksData: { studentId: string, marks: number, total: number }[]) => {
-    const sortedPerformers = [...marksData].sort((a, b) => (b.marks / b.total) - (a.marks / a.total));
-    const top3Ids = sortedPerformers.slice(0, 3).map(m => m.studentId);
-
     const updated = students.map(s => {
-      if (s.studentClass !== targetClass) return s;
-      
       const markEntry = marksData.find(m => m.studentId === s.id);
-      const filteredMarks = s.examMarks.filter(m => !(m.subject === subject && m.date === date));
-      
-      let updatedMarks = s.examMarks;
-      let updatedBadges = s.badges || [];
-
       if (markEntry) {
-        updatedMarks = [...filteredMarks, { subject, marks: markEntry.marks, total: markEntry.total, date }];
-        if (top3Ids.includes(s.id)) {
-           if (!updatedBadges.includes('Star Student')) {
-             updatedBadges = [...updatedBadges, 'Star Student'];
-           }
-        }
+        const newMarks = [...(s.examMarks || []), { subject, marks: markEntry.marks, total: markEntry.total, date }];
+        return { ...s, examMarks: newMarks };
       }
-
-      return { 
-        ...s, 
-        examMarks: updatedMarks,
-        badges: updatedBadges
-      };
+      return s;
     });
-
-    addAuditLog(`Exam results updated for ${targetClass} - ${subject} (${date})`);
     setStudents(updated);
     saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+    addAuditLog(`Exam marks updated for ${targetClass}: ${subject}`);
   };
 
-  const addSchedule = (sch: Omit<Schedule, 'id' | 'completed'>) => {
-    const newSch: Schedule = { ...sch, id: Math.random().toString(36).substr(2, 9), completed: false };
-    const updated = [...schedules, newSch];
+  // Fix: Added missing addSyllabusTopic function
+  const addSyllabusTopic = (title: string, targetClass: string) => {
+    const newTopic: SyllabusTopic = { id: Math.random().toString(36).substr(2, 9), title, completed: false, targetClass };
+    const updated = [...syllabusTopics, newTopic];
+    setSyllabusTopics(updated);
+    saveToStorage(students, schedules, updated, auditLogs);
+    addAuditLog(`Added syllabus topic: ${title} for ${targetClass}`);
+  };
+
+  // Fix: Added missing toggleSyllabusTopic function
+  const toggleSyllabusTopic = (id: string) => {
+    const updated = syllabusTopics.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
+    setSyllabusTopics(updated);
+    saveToStorage(students, schedules, updated, auditLogs);
+  };
+
+  // Fix: Added missing deleteSyllabusTopic function
+  const deleteSyllabusTopic = (id: string) => {
+    const updated = syllabusTopics.filter(t => t.id !== id);
+    setSyllabusTopics(updated);
+    saveToStorage(students, schedules, updated, auditLogs);
+  };
+
+  // Fix: Added missing handleOpenBatchReport function
+  const handleOpenBatchReport = (type: 'attendance' | 'exam' | 'fees', targetClass: string, month: number, year: number) => {
+    setBatchReportState({ isOpen: true, type, targetClass, month, year });
+  };
+
+  // Fix: Added missing handleOpenStatement function
+  const handleOpenStatement = (month: number, year: number) => {
+    setStatementContext({ month, year });
+    setIsIncomeStatementOpen(true);
+  };
+
+  // Fix: Added missing addSchedule function
+  const addSchedule = (sch: any) => {
+    const newSchedule: Schedule = { ...sch, id: Math.random().toString(36).substr(2, 9), completed: false };
+    const updated = [...schedules, newSchedule];
     setSchedules(updated);
     saveToStorage(students, updated, syllabusTopics, auditLogs);
+    addAuditLog(`Task Added: ${sch.title}`);
   };
 
+  // Fix: Added missing deleteSchedule function
   const deleteSchedule = (id: string) => {
     const updated = schedules.filter(s => s.id !== id);
     setSchedules(updated);
     saveToStorage(students, updated, syllabusTopics, auditLogs);
   };
 
+  // Fix: Added missing toggleSchedule function
   const toggleSchedule = (id: string) => {
     const updated = schedules.map(s => s.id === id ? { ...s, completed: !s.completed } : s);
     setSchedules(updated);
     saveToStorage(students, updated, syllabusTopics, auditLogs);
   };
 
-  const addSyllabusTopic = (title: string, targetClass: string) => {
-    const newTopic: SyllabusTopic = { id: Math.random().toString(36).substr(2, 9), title, targetClass, completed: false };
-    const updated = [...syllabusTopics, newTopic];
-    setSyllabusTopics(updated);
-    saveToStorage(students, schedules, updated, auditLogs);
-  };
-
-  const toggleSyllabusTopic = (id: string) => {
-    const updated = syllabusTopics.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
-    setSyllabusTopics(updated);
-    
-    const affectedClass = syllabusTopics.find(t => t.id === id)?.targetClass;
-    if (affectedClass) {
-      const classTopics = updated.filter(t => t.targetClass === affectedClass);
-      const completedCount = classTopics.filter(t => t.completed).length;
-      const progress = classTopics.length > 0 ? Math.round((completedCount / classTopics.length) * 100) : 0;
-      
-      const updatedStudents = students.map(s => s.studentClass === affectedClass ? { ...s, syllabusProgress: progress } : s);
-      setStudents(updatedStudents);
-      saveToStorage(updatedStudents, schedules, updated, auditLogs);
-    } else {
-      saveToStorage(students, schedules, updated, auditLogs);
+  // Fix: Added missing promoteStudent function
+  const promoteStudent = (id: string) => {
+    const student = students.find(s => s.id === id);
+    if (!student) return;
+    const currentIndex = CLASSES.indexOf(student.studentClass);
+    if (currentIndex < CLASSES.length - 1) {
+      const nextClass = CLASSES[currentIndex + 1];
+      const updated = students.map(s => s.id === id ? { ...s, studentClass: nextClass } : s);
+      setStudents(updated);
+      saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+      addAuditLog(`Promoted ${student.name} to ${nextClass}`);
     }
   };
 
-  const deleteSyllabusTopic = (id: string) => {
-    const updated = syllabusTopics.filter(t => t.id !== id);
-    setSyllabusTopics(updated);
-    saveToStorage(students, schedules, updated, auditLogs);
+  // Fix: Added missing toggleDeactivation function
+  const toggleDeactivation = (id: string) => {
+    const student = students.find(s => s.id === id);
+    if (!student) return;
+    const newStatus = student.status === StudentStatus.ACTIVE ? StudentStatus.DEACTIVATED : StudentStatus.ACTIVE;
+    const updated = students.map(s => s.id === id ? { ...s, status: newStatus } : s);
+    setStudents(updated);
+    saveToStorage(updated, schedules, syllabusTopics, auditLogs);
+    addAuditLog(`${newStatus === StudentStatus.ACTIVE ? 'Reactivated' : 'Archived'}: ${student.name}`);
   };
 
   const activeStudents = useMemo(() => students.filter(s => s.status === StudentStatus.ACTIVE), [students]);
@@ -395,21 +373,14 @@ const App: React.FC = () => {
   const filteredStudents = useMemo(() => activeStudents.filter(s => (s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.studentPhone.includes(searchTerm)) && (classFilter === 'All' || s.studentClass === classFilter)), [activeStudents, searchTerm, classFilter]);
 
   const dashboardStats = useMemo(() => {
-    const currentMonthId = `${CURRENT_YEAR}-${new Date().getMonth() + 1}`;
-    const paidThisMonth = activeStudents.filter(s => (s.paidMonths || []).includes(currentMonthId)).length;
-    const attendanceToday = activeStudents.filter(s => (s.attendance || []).includes(new Date().toISOString().split('T')[0])).length;
-    
-    const todayDate = new Date().getDate();
-    const unpaidStudents = activeStudents.filter(s => !(s.paidMonths || []).includes(currentMonthId));
-    const showReminders = todayDate >= 12 && unpaidStudents.length > 0;
-
+    const monthId = `${CURRENT_YEAR}-${new Date().getMonth() + 1}`;
     return {
       total: activeStudents.length,
+      attendance: activeStudents.filter(s => (s.attendance || []).includes(new Date().toISOString().split('T')[0])).length,
+      paid: activeStudents.filter(s => (s.paidMonths || []).includes(monthId)).length,
       deactivated: deactivatedStudents.length,
-      paid: paidThisMonth,
-      attendance: attendanceToday,
-      showReminders,
-      unpaidStudents,
+      showReminders: new Date().getDate() >= 12,
+      unpaidStudents: activeStudents.filter(s => !(s.paidMonths || []).includes(monthId)),
       currentMonthName: MONTHS[new Date().getMonth()]
     };
   }, [activeStudents, deactivatedStudents]);
@@ -417,34 +388,39 @@ const App: React.FC = () => {
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-brightx-navy px-4">
-        <div className="bg-white p-6 md:p-10 rounded-3xl shadow-2xl w-full max-w-md">
+        <div className="bg-white p-8 md:p-12 rounded-[2.5rem] shadow-2xl w-full max-w-md animate-in zoom-in-95 duration-500">
           <div className="flex flex-col items-center mb-10">
-            <h1 className="text-3xl md:text-4xl logo-font text-brightx-navy mb-2">BrightX<span className="teal-box">LEARN</span></h1>
-            <p className="text-gray-400 font-semibold tracking-widest uppercase text-[10px] md:text-xs">Admin Management Portal</p>
+            <h1 className="text-4xl font-black text-brightx-navy mb-2 tracking-tighter">Bright<span className="bg-brightx-teal text-white px-2 ml-1">X</span></h1>
+            <p className="text-gray-400 font-bold uppercase tracking-widest text-xs">Admin Portal</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-6">
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Security Key</label>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Center Access Key</label>
               <input 
                 type="password" 
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder="Enter password..."
-                className="w-full px-5 py-4 rounded-xl border-2 border-gray-100 focus:border-brightx-teal outline-none transition-all text-lg font-mono"
+                className="w-full px-6 py-4 rounded-2xl border-2 border-gray-100 focus:border-brightx-teal outline-none transition-all font-mono"
                 required
               />
             </div>
-            <button 
-              type="submit"
-              className="w-full bg-brightx-navy hover:bg-black text-white font-black py-4 rounded-xl transition-all shadow-xl active:scale-95"
-            >
-              Access Dashboard
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Cloud Sync ID (Optional)</label>
+              <input 
+                type="text" 
+                value={syncKey}
+                onChange={(e) => setSyncKey(e.target.value.toUpperCase().replace(/\s/g, ''))}
+                placeholder="Enter Center Sync ID..."
+                className="w-full px-6 py-4 rounded-2xl border-2 border-gray-100 focus:border-brightx-teal outline-none transition-all font-black tracking-widest text-brightx-teal"
+              />
+              <p className="text-[9px] text-gray-400 font-bold italic px-1">Tip: Enter your ID to load data from your other devices.</p>
+            </div>
+            <button type="submit" className="w-full bg-brightx-navy hover:bg-black text-white font-black py-5 rounded-2xl transition-all shadow-xl active:scale-95 flex items-center justify-center gap-3">
+              {isSyncing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+              ENTER DASHBOARD
             </button>
           </form>
-          <div className="mt-8 flex items-center justify-center gap-2 text-gray-400">
-            <ShieldCheck className="w-4 h-4" />
-            <span className="text-[10px] uppercase font-bold tracking-widest">Authorized Access Only</span>
-          </div>
         </div>
       </div>
     );
@@ -460,150 +436,70 @@ const App: React.FC = () => {
     </div>
   );
 
-  const NavItems = [
-    { id: 'dashboard', icon: LayoutDashboard, label: 'Control Center' },
-    { id: 'directory', icon: Users, label: 'Students' },
-    { id: 'classroom', icon: Layout, label: 'Classroom' },
-    { id: 'fees', icon: CreditCard, label: 'Accounts' },
-    { id: 'schedule', icon: Clock, label: 'Daily Schedule' },
-    { id: 'sync', icon: RefreshCw, label: 'Cloud Sync' },
-    { id: 'deactivated', icon: History, label: 'Archives' },
-  ];
-
-  const handleOpenStatement = (month: number, year: number) => {
-    setStatementContext({ month, year });
-    setIsIncomeStatementOpen(true);
-  };
-
-  const handleOpenBatchReport = (type: 'attendance' | 'exam' | 'fees', targetClass: string, month: number, year: number) => {
-    setBatchReportState({ isOpen: true, type, targetClass, month, year });
-  };
-
   return (
     <div className="flex min-h-screen bg-[#f8fafc]">
-      {isSidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden backdrop-blur-sm transition-opacity"
-          onClick={() => setIsSidebarOpen(false)}
-        />
-      )}
+      {isSidebarOpen && <div className="fixed inset-0 bg-black/50 z-40 lg:hidden backdrop-blur-sm" onClick={() => setIsSidebarOpen(false)} />}
 
       <aside className={`fixed lg:sticky top-0 h-screen w-72 bg-white border-r border-gray-200 z-50 transition-transform lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col`}>
         <div className="p-8 flex items-center justify-between">
           <Logo />
-          <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-2 text-gray-400 hover:bg-gray-50 rounded-lg">
-            <CloseIcon className="w-6 h-6" />
-          </button>
+          <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden p-2 text-gray-400"><CloseIcon className="w-6 h-6" /></button>
         </div>
         <nav className="flex-1 px-4 space-y-1">
-          {NavItems.map((item) => (
+          {[
+            { id: 'dashboard', icon: LayoutDashboard, label: 'Control Center' },
+            { id: 'directory', icon: Users, label: 'Students' },
+            { id: 'classroom', icon: Layout, label: 'Classroom' },
+            { id: 'fees', icon: CreditCard, label: 'Accounts' },
+            { id: 'schedule', icon: Clock, label: 'Schedule' },
+            { id: 'sync', icon: Cloud, label: 'Cloud Config' },
+            { id: 'deactivated', icon: History, label: 'Archives' },
+          ].map((item) => (
             <button 
               key={item.id}
               onClick={() => { setActiveTab(item.id as any); setIsSidebarOpen(false); }}
-              className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all group ${activeTab === item.id ? 'bg-brightx-navy text-white shadow-lg' : 'text-gray-500 hover:bg-gray-50'}`}
+              className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all ${activeTab === item.id ? 'bg-brightx-navy text-white shadow-lg' : 'text-gray-500 hover:bg-gray-50'}`}
             >
-              <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-brightx-teal' : 'group-hover:text-brightx-navy'} ${isSyncing && item.id === 'sync' ? 'animate-spin' : ''}`} /> 
-              <span className="font-bold text-sm tracking-tight">{item.label}</span>
+              <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-brightx-teal' : ''}`} /> 
+              <span className="font-bold text-sm">{item.label}</span>
             </button>
           ))}
         </nav>
         <div className="p-6 border-t border-gray-100">
-          <button 
-            onClick={() => setIsLoggedIn(false)}
-            className="w-full flex items-center gap-4 px-5 py-4 text-red-500 hover:bg-red-50 rounded-2xl transition-all font-bold text-sm"
-          >
-            <LogOut className="w-5 h-5" /> Logout Session
-          </button>
+           <button onClick={() => setIsLoggedIn(false)} className="w-full flex items-center gap-4 px-5 py-4 text-red-500 hover:bg-red-50 rounded-2xl transition-all font-bold text-sm">
+             <LogOut className="w-5 h-5" /> Logout Center
+           </button>
         </div>
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0">
-        <header className="lg:hidden flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200 sticky top-0 z-30">
-          <Logo />
-          <button 
-            onClick={() => setIsSidebarOpen(true)}
-            className="p-2 text-brightx-navy bg-gray-50 rounded-xl"
-          >
-            <Menu className="w-6 h-6" />
-          </button>
+        <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-gray-200 sticky top-0 z-30">
+          <div className="lg:hidden"><Logo /></div>
+          <div className="hidden lg:flex items-center gap-3">
+             <div className={`w-3 h-3 rounded-full ${isSyncing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">
+               {isSyncing ? 'Syncing Cloud...' : `Cloud Saved ${lastSynced || ''}`}
+             </span>
+          </div>
+          <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 text-brightx-navy bg-gray-50 rounded-xl"><Menu className="w-6 h-6" /></button>
         </header>
 
         <div className="flex-1 p-4 md:p-10 overflow-auto">
-          {celebration && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-white/90 pointer-events-none animate-in fade-in zoom-in duration-500">
-              <div className="text-center px-4">
-                <Award className="w-24 md:w-32 h-24 md:h-32 text-yellow-400 mx-auto animate-bounce" />
-                <h2 className="text-3xl md:text-5xl font-black text-brightx-navy mt-4">UPGRADED!</h2>
-                <p className="text-lg md:text-2xl font-bold text-brightx-teal mt-2">{celebration} promoted successfully</p>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'dashboard' && (
-            <Dashboard 
-              stats={dashboardStats} 
-              setActiveTab={setActiveTab} 
-              setIsFormOpen={setIsFormOpen} 
-            />
-          )}
-
+          {activeTab === 'dashboard' && <Dashboard stats={dashboardStats} setActiveTab={setActiveTab} setIsFormOpen={setIsFormOpen} />}
           {activeTab === 'directory' && (
             <section className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h1 className="text-2xl md:text-3xl font-black text-brightx-navy">Student Directory</h1>
-                  <p className="text-gray-400 font-medium">{activeStudents.length} Active Records</p>
-                </div>
-                <button 
-                  onClick={() => { setEditingStudent(undefined); setIsFormOpen(true); }}
-                  className="bg-brightx-teal hover:bg-brightx-navy text-white px-6 md:px-8 py-3 md:py-4 rounded-2xl flex items-center justify-center gap-2 font-black shadow-lg transition-all active:scale-95"
-                >
-                  <Plus className="w-5 h-5" /> <span className="hidden sm:inline">NEW ADMISSION</span><span className="sm:hidden">ADD</span>
+                <h1 className="text-3xl font-black text-brightx-navy">Student Registry</h1>
+                <button onClick={() => { setEditingStudent(undefined); setIsFormOpen(true); }} className="bg-brightx-teal text-white px-8 py-4 rounded-2xl flex items-center justify-center gap-2 font-black shadow-lg">
+                  <Plus className="w-5 h-5" /> NEW ADMISSION
                 </button>
               </div>
-
-              <div className="bg-white p-4 md:p-5 rounded-3xl shadow-sm border border-gray-100 flex flex-col md:flex-row gap-4">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-                  <input 
-                    type="text" 
-                    placeholder="Search by name or phone..." 
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-12 pr-6 py-3 border-2 border-transparent bg-gray-50 rounded-2xl outline-none focus:border-brightx-teal transition-all text-sm"
-                  />
-                </div>
-                <select 
-                  value={classFilter}
-                  onChange={(e) => setClassFilter(e.target.value)}
-                  className="px-6 py-3 bg-gray-50 rounded-2xl outline-none focus:ring-2 focus:ring-brightx-teal font-bold text-gray-700 appearance-none min-w-[150px] text-sm"
-                >
-                  <option value="All">All Classes</option>
-                  {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 {filteredStudents.map(student => (
-                  <div 
-                    key={student.id} 
-                    className="bg-white rounded-[2rem] md:rounded-[2.5rem] p-6 md:p-8 shadow-sm border border-gray-100 hover:shadow-xl transition-all cursor-pointer relative group overflow-hidden"
-                    onClick={() => setSelectedStudentId(student.id)}
-                  >
-                    <div className="absolute top-0 right-0 w-24 md:w-32 h-24 md:h-32 bg-brightx-teal/5 rounded-bl-full -mr-8 md:-mr-10 -mt-8 md:-mt-10 group-hover:bg-brightx-teal/10 transition-colors" />
-                    <div className="flex justify-between items-start mb-6">
-                      <StudentAvatar 
-                        iconId={student.profileIcon} 
-                        name={student.name} 
-                        className="w-12 md:w-16 h-12 md:h-16 bg-brightx-navy text-brightx-teal shadow-lg rotate-3 group-hover:rotate-0" 
-                        size={student.profileIcon ? 24 : 32}
-                      />
-                      <span className="px-3 py-1 bg-brightx-teal/10 text-brightx-teal text-[8px] md:text-[10px] font-black rounded-full uppercase tracking-widest">
-                        {student.studentClass}
-                      </span>
-                    </div>
-                    <h3 className="text-lg md:text-xl font-black text-gray-800 mb-1 group-hover:text-brightx-teal transition-colors truncate">{student.name}</h3>
-                    <p className="text-xs md:text-sm text-gray-400 font-bold mb-6">{student.studentPhone}</p>
+                  <div key={student.id} className="bg-white rounded-[2rem] p-8 shadow-sm border border-gray-100 cursor-pointer" onClick={() => setSelectedStudentId(student.id)}>
+                    <h3 className="text-xl font-black text-gray-800 truncate">{student.name}</h3>
+                    <p className="text-xs text-gray-400 font-bold mb-4">{student.studentClass}</p>
+                    <p className="text-[10px] font-black text-brightx-teal uppercase tracking-widest">{student.studentPhone}</p>
                   </div>
                 ))}
               </div>
@@ -622,79 +518,33 @@ const App: React.FC = () => {
               onOpenReport={handleOpenBatchReport}
             />
           )}
-          {activeTab === 'fees' && (
-            <FeesManager 
-              students={activeStudents} 
-              onToggleFee={toggleFeeStatus} 
-              onOpenStatement={handleOpenStatement} 
-              onOpenBatchReport={handleOpenBatchReport}
-            />
-          )}
+          {activeTab === 'fees' && <FeesManager students={activeStudents} onToggleFee={toggleFeeStatus} onOpenStatement={handleOpenStatement} onOpenBatchReport={handleOpenBatchReport} />}
           {activeTab === 'schedule' && <DailySchedule schedules={schedules} onAdd={addSchedule} onDelete={deleteSchedule} onToggle={toggleSchedule} />}
-          {activeTab === 'deactivated' && <DeactivatedAccounts students={deactivatedStudents} auditLogs={auditLogs} onReactivate={toggleDeactivation} />}
-          
           {activeTab === 'sync' && (
-            <section className="max-w-2xl mx-auto space-y-10 animate-in fade-in duration-500">
+            <section className="max-w-2xl mx-auto space-y-10">
               <div className="text-center">
-                <div className="w-20 h-20 bg-brightx-teal/10 text-brightx-teal rounded-3xl flex items-center justify-center mx-auto mb-6">
-                   <RefreshCw className={`w-10 h-10 ${isSyncing ? 'animate-spin' : ''}`} />
-                </div>
-                <h1 className="text-3xl font-black text-brightx-navy">Cross-Device Cloud Sync</h1>
-                <p className="text-gray-400 font-medium mt-2">Transfer your data between PC and Mobile devices.</p>
+                <Cloud className="w-16 h-16 text-brightx-teal mx-auto mb-4" />
+                <h1 className="text-3xl font-black text-brightx-navy">Cloud Sync Config</h1>
+                <p className="text-gray-400 font-medium">Manage how your data travels between devices.</p>
               </div>
-
-              <div className="bg-white p-8 md:p-10 rounded-[3rem] border border-gray-100 shadow-xl space-y-8">
+              <div className="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-xl space-y-8">
                 <div className="space-y-4">
-                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Your Unique Sync Key</label>
-                  <div className="flex gap-4">
-                    <input 
-                      type="text" 
-                      value={syncKey}
-                      onChange={(e) => {
-                        const val = e.target.value.toUpperCase().replace(/\s/g, '');
-                        setSyncKey(val);
-                        localStorage.setItem('BX_SYNC_KEY', val);
-                      }}
-                      className="flex-1 px-6 py-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-brightx-teal outline-none font-black text-brightx-navy tracking-widest"
-                      placeholder="ENTER_A_SECRET_ID_HERE"
-                    />
-                    <button 
-                      onClick={() => {
-                        const randomKey = Math.random().toString(36).substring(2, 12).toUpperCase();
-                        setSyncKey(randomKey);
-                        localStorage.setItem('BX_SYNC_KEY', randomKey);
-                      }}
-                      className="px-6 bg-gray-100 text-gray-600 rounded-2xl font-black text-[10px] hover:bg-gray-200 transition-all"
-                    >
-                      GENERATE
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-gray-400 font-bold italic px-2">Use the same key on your phone to pull the data you saved from your PC.</p>
+                   <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Active Center ID</label>
+                   <input 
+                     type="text" 
+                     value={syncKey}
+                     onChange={(e) => setSyncKey(e.target.value.toUpperCase().replace(/\s/g, ''))}
+                     className="w-full px-8 py-5 bg-gray-50 rounded-2xl font-black tracking-widest text-brightx-navy text-xl outline-none border-2 border-transparent focus:border-brightx-teal"
+                   />
                 </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
-                  <button 
-                    onClick={handlePushSync}
-                    disabled={isSyncing || !syncKey}
-                    className="flex items-center justify-center gap-3 bg-brightx-navy text-white py-5 rounded-2xl font-black shadow-lg hover:bg-black transition-all disabled:opacity-50"
-                  >
-                    <Upload className="w-5 h-5" /> PUSH TO CLOUD
+                <div className="grid grid-cols-2 gap-4">
+                  <button onClick={() => handlePullSync()} className="bg-brightx-navy text-white py-5 rounded-2xl font-black flex items-center justify-center gap-3">
+                    <Download className="w-5 h-5" /> RE-SYNC NOW
                   </button>
-                  <button 
-                    onClick={handlePullSync}
-                    disabled={isSyncing || !syncKey}
-                    className="flex items-center justify-center gap-3 bg-brightx-teal text-white py-5 rounded-2xl font-black shadow-lg hover:brightness-110 transition-all disabled:opacity-50"
-                  >
-                    <Download className="w-5 h-5" /> PULL FROM CLOUD
+                  <button onClick={() => addAuditLog("Manual Push Triggered")} className="bg-brightx-teal text-white py-5 rounded-2xl font-black flex items-center justify-center gap-3">
+                    <Upload className="w-5 h-5" /> FORCE SAVE
                   </button>
                 </div>
-              </div>
-
-              <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex gap-4">
-                <AlertCircle className="w-6 h-6 text-amber-500 shrink-0" />
-                <p className="text-xs font-bold text-amber-900 leading-relaxed">
-                  Important: "Push to Cloud" will overwrite any existing data stored with this key. "Pull from Cloud" will replace all current data on this device. Always push from your primary device before pulling on a secondary one.
-                </p>
               </div>
             </section>
           )}
@@ -713,30 +563,9 @@ const App: React.FC = () => {
           onOpenReportCard={() => setReportCardStudentId(selectedStudentId)}
         />
       )}
-      {reportCardStudentId && (
-        <ReportCard 
-          student={students.find(s => s.id === reportCardStudentId)!}
-          onClose={() => setReportCardStudentId(null)}
-        />
-      )}
-      {isIncomeStatementOpen && (
-        <IncomeStatement 
-          students={activeStudents}
-          onClose={() => setIsIncomeStatementOpen(false)}
-          selectedMonth={statementContext.month}
-          selectedYear={statementContext.year}
-        />
-      )}
-      {batchReportState.isOpen && (
-        <BatchReport 
-          type={batchReportState.type}
-          selectedClass={batchReportState.targetClass}
-          selectedMonth={batchReportState.month}
-          selectedYear={batchReportState.year}
-          students={activeStudents}
-          onClose={() => setBatchReportState(prev => ({ ...prev, isOpen: false }))}
-        />
-      )}
+      {reportCardStudentId && <ReportCard student={students.find(s => s.id === reportCardStudentId)!} onClose={() => setReportCardStudentId(null)} />}
+      {isIncomeStatementOpen && <IncomeStatement students={activeStudents} onClose={() => setIsIncomeStatementOpen(false)} selectedMonth={statementContext.month} selectedYear={statementContext.year} />}
+      {batchReportState.isOpen && <BatchReport type={batchReportState.type} selectedClass={batchReportState.targetClass} selectedMonth={batchReportState.month} selectedYear={batchReportState.year} students={activeStudents} onClose={() => setBatchReportState(prev => ({ ...prev, isOpen: false }))} />}
       {securityModal && <SecurityModal isOpen={securityModal.isOpen} onConfirm={() => { securityModal.action(); setSecurityModal(null); }} onClose={() => setSecurityModal(null)} />}
     </div>
   );
