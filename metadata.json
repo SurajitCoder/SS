@@ -1,0 +1,7 @@
+{
+  "name": "EduCenter Pro - Training Management System",
+  "description": "A comprehensive management suite for computer training centers featuring student registration, fee tracking (Class 3-12), exam records, and daily task scheduling.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
