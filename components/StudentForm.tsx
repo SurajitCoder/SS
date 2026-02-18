@@ -101,6 +101,7 @@ const StudentForm: React.FC<StudentFormProps> = ({ onClose, onSubmit, initialDat
   const inputStyle = (field: string) => `w-full px-5 py-3 bg-white border ${errors[field] ? 'border-red-500 bg-red-50' : 'border-gray-200'} rounded-xl outline-none focus:border-brightx-navy focus:ring-1 focus:ring-brightx-navy transition-all font-bold text-gray-700 placeholder:text-gray-300`;
 
   const handlePhoneInput = (value: string) => {
+    // Only numbers and max 10 digits
     return value.replace(/\D/g, '').slice(0, 10);
   };
 

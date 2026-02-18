@@ -26,6 +26,10 @@ import {
   Send,
   History,
   Menu,
+  Cloud,
+  Download,
+  Upload,
+  RefreshCw,
   X as CloseIcon
 } from 'lucide-react';
 import { Student, StudentStatus, Schedule, SyllabusTopic, AuditLogEntry } from './types';
@@ -44,11 +48,13 @@ import IncomeStatement from './components/IncomeStatement';
 import BatchReport from './components/BatchReport';
 
 const STORAGE_KEY = 'BRIGHTXLEARN_DATA_V3';
+// Simple public KV store for syncing data between devices
+const SYNC_API = 'https://kvdb.io/4y27pYyR9p7u8s8w8e8r8t/'; 
 
 const App: React.FC = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'directory' | 'classroom' | 'fees' | 'deactivated' | 'schedule'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'directory' | 'classroom' | 'fees' | 'deactivated' | 'schedule' | 'sync'>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [students, setStudents] = useState<Student[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
@@ -57,6 +63,9 @@ const App: React.FC = () => {
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [reportCardStudentId, setReportCardStudentId] = useState<string | null>(null);
   
+  const [syncKey, setSyncKey] = useState(localStorage.getItem('BX_SYNC_KEY') || '');
+  const [isSyncing, setIsSyncing] = useState(false);
+
   const [isIncomeStatementOpen, setIsIncomeStatementOpen] = useState(false);
   const [statementContext, setStatementContext] = useState({ month: new Date().getMonth(), year: new Date().getFullYear() });
 
@@ -108,6 +117,51 @@ const App: React.FC = () => {
       return updated;
     });
   }, [students, schedules, syllabusTopics, saveToStorage]);
+
+  const handlePushSync = async () => {
+    if (!syncKey) {
+      alert("Please enter a Sync Key first!");
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      const data = { students, schedules, syllabusTopics, auditLogs };
+      await fetch(`${SYNC_API}${syncKey}`, {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+      addAuditLog("Data pushed to Cloud Sync");
+      alert("Data successfully saved to Cloud!");
+    } catch (e) {
+      alert("Sync failed. Check connection.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handlePullSync = async () => {
+    if (!syncKey) {
+      alert("Please enter a Sync Key first!");
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      const res = await fetch(`${SYNC_API}${syncKey}`);
+      if (!res.ok) throw new Error("Key not found");
+      const data = await res.json();
+      setStudents(data.students || []);
+      setSchedules(data.schedules || []);
+      setSyllabusTopics(data.syllabusTopics || []);
+      setAuditLogs(data.auditLogs || []);
+      saveToStorage(data.students, data.schedules, data.syllabusTopics, data.auditLogs);
+      addAuditLog("Data pulled from Cloud Sync");
+      alert("Data successfully synchronized from Cloud!");
+    } catch (e) {
+      alert("Pull failed. Key may be invalid or cloud is empty.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -260,8 +314,6 @@ const App: React.FC = () => {
       if (s.studentClass !== targetClass) return s;
       
       const markEntry = marksData.find(m => m.studentId === s.id);
-      // Filter existing marks for same subject AND same date to avoid duplication, OR allow multiple per month?
-      // Center policy: only one entry for same subject name on same date.
       const filteredMarks = s.examMarks.filter(m => !(m.subject === subject && m.date === date));
       
       let updatedMarks = s.examMarks;
@@ -414,6 +466,7 @@ const App: React.FC = () => {
     { id: 'classroom', icon: Layout, label: 'Classroom' },
     { id: 'fees', icon: CreditCard, label: 'Accounts' },
     { id: 'schedule', icon: Clock, label: 'Daily Schedule' },
+    { id: 'sync', icon: RefreshCw, label: 'Cloud Sync' },
     { id: 'deactivated', icon: History, label: 'Archives' },
   ];
 
@@ -449,7 +502,7 @@ const App: React.FC = () => {
               onClick={() => { setActiveTab(item.id as any); setIsSidebarOpen(false); }}
               className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl transition-all group ${activeTab === item.id ? 'bg-brightx-navy text-white shadow-lg' : 'text-gray-500 hover:bg-gray-50'}`}
             >
-              <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-brightx-teal' : 'group-hover:text-brightx-navy'}`} /> 
+              <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-brightx-teal' : 'group-hover:text-brightx-navy'} ${isSyncing && item.id === 'sync' ? 'animate-spin' : ''}`} /> 
               <span className="font-bold text-sm tracking-tight">{item.label}</span>
             </button>
           ))}
@@ -579,6 +632,72 @@ const App: React.FC = () => {
           )}
           {activeTab === 'schedule' && <DailySchedule schedules={schedules} onAdd={addSchedule} onDelete={deleteSchedule} onToggle={toggleSchedule} />}
           {activeTab === 'deactivated' && <DeactivatedAccounts students={deactivatedStudents} auditLogs={auditLogs} onReactivate={toggleDeactivation} />}
+          
+          {activeTab === 'sync' && (
+            <section className="max-w-2xl mx-auto space-y-10 animate-in fade-in duration-500">
+              <div className="text-center">
+                <div className="w-20 h-20 bg-brightx-teal/10 text-brightx-teal rounded-3xl flex items-center justify-center mx-auto mb-6">
+                   <RefreshCw className={`w-10 h-10 ${isSyncing ? 'animate-spin' : ''}`} />
+                </div>
+                <h1 className="text-3xl font-black text-brightx-navy">Cross-Device Cloud Sync</h1>
+                <p className="text-gray-400 font-medium mt-2">Transfer your data between PC and Mobile devices.</p>
+              </div>
+
+              <div className="bg-white p-8 md:p-10 rounded-[3rem] border border-gray-100 shadow-xl space-y-8">
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Your Unique Sync Key</label>
+                  <div className="flex gap-4">
+                    <input 
+                      type="text" 
+                      value={syncKey}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase().replace(/\s/g, '');
+                        setSyncKey(val);
+                        localStorage.setItem('BX_SYNC_KEY', val);
+                      }}
+                      className="flex-1 px-6 py-4 bg-gray-50 rounded-2xl border-2 border-transparent focus:border-brightx-teal outline-none font-black text-brightx-navy tracking-widest"
+                      placeholder="ENTER_A_SECRET_ID_HERE"
+                    />
+                    <button 
+                      onClick={() => {
+                        const randomKey = Math.random().toString(36).substring(2, 12).toUpperCase();
+                        setSyncKey(randomKey);
+                        localStorage.setItem('BX_SYNC_KEY', randomKey);
+                      }}
+                      className="px-6 bg-gray-100 text-gray-600 rounded-2xl font-black text-[10px] hover:bg-gray-200 transition-all"
+                    >
+                      GENERATE
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 font-bold italic px-2">Use the same key on your phone to pull the data you saved from your PC.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4">
+                  <button 
+                    onClick={handlePushSync}
+                    disabled={isSyncing || !syncKey}
+                    className="flex items-center justify-center gap-3 bg-brightx-navy text-white py-5 rounded-2xl font-black shadow-lg hover:bg-black transition-all disabled:opacity-50"
+                  >
+                    <Upload className="w-5 h-5" /> PUSH TO CLOUD
+                  </button>
+                  <button 
+                    onClick={handlePullSync}
+                    disabled={isSyncing || !syncKey}
+                    className="flex items-center justify-center gap-3 bg-brightx-teal text-white py-5 rounded-2xl font-black shadow-lg hover:brightness-110 transition-all disabled:opacity-50"
+                  >
+                    <Download className="w-5 h-5" /> PULL FROM CLOUD
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 flex gap-4">
+                <AlertCircle className="w-6 h-6 text-amber-500 shrink-0" />
+                <p className="text-xs font-bold text-amber-900 leading-relaxed">
+                  Important: "Push to Cloud" will overwrite any existing data stored with this key. "Pull from Cloud" will replace all current data on this device. Always push from your primary device before pulling on a secondary one.
+                </p>
+              </div>
+            </section>
+          )}
         </div>
       </main>
 
